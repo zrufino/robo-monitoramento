@@ -1,0 +1,23 @@
+# Segredos
+.env
+.env.local
+.env.*.local
+
+# Ambiente virtual Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Amostras da API (podem conter dados sensíveis)
+amostras_api/
+
+# Editor
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Supabase
+supabase/
