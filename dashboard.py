@@ -90,12 +90,33 @@ if pagina == "Saldo atual":
         st.warning("Nenhum item no banco. Rode o coletor primeiro.")
         st.stop()
 
-    # Filtros
+    # KPIs de quantidade — somam SÓ o nível SG (subgrupo), que é onde o Verleih
+    # guarda a contabilidade real. Somar GR+SG+IT dá triple-counting porque
+    # GR é soma dos SG abaixo, e IT (patrimônio individual) não tem qtde.
+    df_sg = df[df["item_tipo"] == "SG"]
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total em estoque", humano(df_sg["qtde_total"].sum()))
+    k2.metric("Disponível", humano(df_sg["qtde_disponivel"].sum()))
+    k3.metric("Locado", humano(df_sg["qtde_locada"].sum()))
+    k4.metric("Manutenção", humano(df_sg["qtde_manutencao"].sum()))
+    k5.metric("Trânsito", humano(df_sg["qtde_transito"].sum()))
+
+    # KPIs de cadastro — quantos itens existem em cada nível
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Grupos", f"{(df['item_tipo']=='GR').sum():,}".replace(",", "."))
+    c2.metric("Subgrupos", f"{(df['item_tipo']=='SG').sum():,}".replace(",", "."))
+    c3.metric("Patrimônios", f"{(df['item_tipo']=='IT').sum():,}".replace(",", "."))
+
+    st.markdown("---")
+
+    # Filtros pra tabela
     col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
     with col1:
         busca = st.text_input("Buscar (código ou descrição)", "")
     with col2:
-        tipo = st.selectbox("Tipo", ["Todos", "GR (grupo)", "SG (subgrupo)", "IT (item)"])
+        tipo = st.selectbox(
+            "Tipo", ["SG (subgrupo)", "GR (grupo)", "IT (patrimônio)", "Todos"]
+        )
     with col3:
         com_saldo = st.checkbox("Só com saldo > 0", value=False)
     with col4:
@@ -115,13 +136,7 @@ if pagina == "Saldo atual":
     if com_locada:
         df_f = df_f[df_f["qtde_locada"].fillna(0) > 0]
 
-    # KPIs de cima
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Itens listados", f"{len(df_f):,}".replace(",", "."))
-    k2.metric("Total em estoque", humano(df_f["qtde_total"].sum()))
-    k3.metric("Disponível", humano(df_f["qtde_disponivel"].sum()))
-    k4.metric("Locado", humano(df_f["qtde_locada"].sum()))
-    k5.metric("Em manutenção", humano(df_f["qtde_manutencao"].sum()))
+    st.caption(f"Mostrando **{len(df_f):,}** linhas".replace(",", "."))
 
     st.dataframe(
         df_f[[
