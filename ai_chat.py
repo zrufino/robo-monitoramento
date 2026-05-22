@@ -342,30 +342,31 @@ def send_message(
     client = _client()
     system_prompt = build_system_prompt(schema_str, summary_str)
 
-    # Converte history (lista de {"role","content"}) pro formato Gemini.
-    historico_gemini = []
+    # Monta contents (history + nova mensagem) direto pra generate_content_stream.
+    # Evita chats.create — combinar chats + tools + streaming tem bug intermitente
+    # no SDK 1.47 onde a tool não é chamada quando há history acumulado.
+    contents = []
     for msg in history:
         papel = "user" if msg["role"] == "user" else "model"
-        historico_gemini.append(
+        contents.append(
             types.Content(role=papel, parts=[types.Part.from_text(text=msg["content"])])
         )
+    contents.append(
+        types.Content(role="user", parts=[types.Part.from_text(text=user_msg)])
+    )
 
-    chat = client.chats.create(
-        model=MODEL,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            tools=[run_query],
-            # Limita o número de function calls automáticos no mesmo turno.
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                maximum_remote_calls=5,
-            ),
-        ),
-        history=historico_gemini,
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=[run_query],
     )
 
     tokens_in = 0
     tokens_out = 0
-    for chunk in chat.send_message_stream(user_msg):
+    for chunk in client.models.generate_content_stream(
+        model=MODEL,
+        contents=contents,
+        config=config,
+    ):
         if chunk.text:
             yield chunk.text
         if getattr(chunk, "usage_metadata", None):
