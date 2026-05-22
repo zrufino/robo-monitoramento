@@ -33,12 +33,16 @@ from psycopg.types.json import Jsonb
 # ============================================================
 # Constantes
 # ============================================================
-MODEL = "gemini-2.5-flash"
+# Modelo Gemini. Pra trocar, edite aqui (e atualize os preços abaixo).
+# - gemini-2.5-flash-lite : free tier 200 req/dia, ~10x mais barato, qualidade OK pra Q&A
+# - gemini-2.5-flash      : free tier 20 req/dia (precisa Tier 1 pra uso real)
+# - gemini-2.5-pro        : melhor qualidade, ~25x preço do lite
+MODEL = "gemini-2.5-flash-lite"
 
-# Preços Gemini 2.5 Flash (https://ai.google.dev/pricing — verificar a cada trimestre).
-# Atualizado em 2026-05-22. Trocar quando Google mudar.
-PRICE_INPUT_PER_MTOK = 0.075   # USD por milhão de tokens de entrada
-PRICE_OUTPUT_PER_MTOK = 0.30   # USD por milhão de tokens de saída
+# Preços Gemini 2.5 Flash-Lite (https://ai.google.dev/pricing — verificar trimestralmente).
+# Atualizado 2026-05-22.
+PRICE_INPUT_PER_MTOK = 0.10    # USD por milhão de tokens de entrada
+PRICE_OUTPUT_PER_MTOK = 0.40   # USD por milhão de tokens de saída
 
 # Cap mensal hardcoded. Pra trocar, editar aqui — sem override em runtime no MVP.
 CAP_MENSAL_USD = 5.00
@@ -77,22 +81,7 @@ def _readonly_conn():
 # Tool exposta à IA: run_query(sql)
 # ============================================================
 def run_query(sql: str) -> str:
-    """Executa uma consulta SQL SELECT no banco Postgres e devolve o resultado.
-
-    Use para responder perguntas sobre os dados do dashboard (estoque, rotas,
-    movimentações, mudanças detectadas, saúde do robô coletor). Apenas SELECT
-    é permitido — qualquer outra operação retorna ERRO. Tabelas/views
-    disponíveis são listadas no system prompt.
-
-    Args:
-        sql: consulta SQL completa começando com SELECT. Se a consulta retornar
-             muitas linhas, adicione LIMIT — o sistema adiciona LIMIT 200 se
-             nenhum LIMIT for declarado.
-
-    Returns:
-        String com o resultado formatado como tabela markdown, ou mensagem de
-        erro começando com "ERRO:" se a query falhar.
-    """
+    """Executa uma consulta SQL SELECT no banco Postgres do dashboard e devolve o resultado como tabela markdown. Use sempre que precisar de números, comparações ou listagens dos dados (estoque, rotas, movimentações, mudanças). Apenas SELECT é permitido; LIMIT 200 é adicionado se a query não tiver LIMIT. Tabelas e views disponíveis estão no system prompt."""
     sql_limpo = sql.strip().rstrip(";").strip()
     sql_baixo = sql_limpo.lower().lstrip()
 
@@ -342,10 +331,10 @@ def send_message(
     client = _client()
     system_prompt = build_system_prompt(schema_str, summary_str)
 
-    # Monta contents (history + nova mensagem) direto pra generate_content_stream.
-    # Evita chats.create — combinar chats + tools + streaming tem bug intermitente
-    # no SDK 1.47 onde a tool não é chamada quando há history acumulado.
-    contents = []
+    # Manual function calling em loop — evita bugs do automatic function calling
+    # do SDK 1.47 que falha silenciosamente em "isinstance() arg 2 must be a type
+    # or tuple of types" ao serializar retornos de tool.
+    contents: list = []
     for msg in history:
         papel = "user" if msg["role"] == "user" else "model"
         contents.append(
@@ -355,24 +344,85 @@ def send_message(
         types.Content(role="user", parts=[types.Part.from_text(text=user_msg)])
     )
 
+    # Schema declarado manualmente — não deixa o SDK introspectar a função.
+    run_query_decl = types.FunctionDeclaration(
+        name="run_query",
+        description=(
+            "Executa uma consulta SQL SELECT no banco Postgres do dashboard e devolve "
+            "o resultado como tabela markdown. Use sempre que precisar de números, "
+            "comparações ou listagens dos dados (estoque, rotas, movimentações, "
+            "mudanças). Apenas SELECT é permitido."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "sql": types.Schema(
+                    type="STRING",
+                    description="Consulta SQL completa começando com SELECT.",
+                ),
+            },
+            required=["sql"],
+        ),
+    )
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
-        tools=[run_query],
+        tools=[types.Tool(function_declarations=[run_query_decl])],
     )
 
     tokens_in = 0
     tokens_out = 0
-    for chunk in client.models.generate_content_stream(
-        model=MODEL,
-        contents=contents,
-        config=config,
-    ):
-        if chunk.text:
-            yield chunk.text
-        if getattr(chunk, "usage_metadata", None):
-            # O último chunk traz usage_metadata acumulado da resposta.
-            tokens_in = chunk.usage_metadata.prompt_token_count or 0
-            tokens_out = chunk.usage_metadata.candidates_token_count or 0
+    MAX_FUNCTION_CALLS = 5
+    for _ in range(MAX_FUNCTION_CALLS + 1):
+        resp = client.models.generate_content(
+            model=MODEL,
+            contents=contents,
+            config=config,
+        )
+        if getattr(resp, "usage_metadata", None):
+            tokens_in  += resp.usage_metadata.prompt_token_count or 0
+            tokens_out += resp.usage_metadata.candidates_token_count or 0
+
+        # Pega a primeira function_call (se houver) nas parts da resposta.
+        function_call = None
+        if resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts:
+            for part in resp.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name:
+                    function_call = fc
+                    break
+
+        if function_call is None:
+            # Resposta final — emite texto e termina.
+            texto = resp.text or ""
+            if texto:
+                yield texto
+            break
+
+        # Executa a tool localmente.
+        try:
+            args = dict(function_call.args or {})
+            if function_call.name == "run_query":
+                resultado = run_query(args.get("sql", ""))
+            else:
+                resultado = f"ERRO: função desconhecida `{function_call.name}`"
+        except Exception as exc:
+            resultado = f"ERRO ao executar tool: {type(exc).__name__}: {exc}"
+
+        # Adiciona o turn do model (com function_call) e o function_response.
+        contents.append(resp.candidates[0].content)
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_function_response(
+                        name=function_call.name,
+                        response={"result": resultado},
+                    )
+                ],
+            )
+        )
+    else:
+        yield "\n\n(limite de chamadas de tool atingido — encerrando turno)"
 
     # Como Python não permite return em generator simples, retornamos os
     # metadados pelo wrapper send_message_collect abaixo.
