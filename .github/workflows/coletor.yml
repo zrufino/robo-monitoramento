@@ -1,10 +1,10 @@
-name: coletor-4x-dia
+name: coletor-3x-dia
 
 on:
   schedule:
-    # 8h, 12h, 16h, 20h horário de São Paulo (UTC-3, sem horário de verão desde 2019)
-    # = 11h, 15h, 19h, 23h UTC
-    - cron: '0 11,15,19,23 * * *'
+    # 8h, 12h, 18h horário de São Paulo (UTC-3, sem horário de verão desde 2019)
+    # = 11h, 15h, 21h UTC
+    - cron: '0 11,15,21 * * *'
   workflow_dispatch: {}
 
 jobs:
