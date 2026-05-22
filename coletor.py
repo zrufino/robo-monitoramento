@@ -161,67 +161,70 @@ def coletar_equipamentos(conn, run_id: int) -> int:
 
     log(f"  {len(payload)} itens recebidos. Salvando...")
 
+    items_rows = []
+    snap_rows = []
+    for item in payload:
+        codigo = item.get("codigo")
+        if not codigo:
+            continue
+        items_rows.append((
+            codigo,
+            item.get("descricao"),
+            item.get("tipo"),
+            item.get("tipo_equipamento"),
+            item.get("quantitativo"),
+            item.get("codsuperior"),
+            item.get("unidade"),
+            item.get("vlcompra"),
+            item.get("vlmercado"),
+            item.get("status"),
+            item.get("guid"),
+            item.get("atualizado_em"),
+            Jsonb(item),
+        ))
+        snap_rows.append((
+            run_id, codigo,
+            item.get("qtde_total"), item.get("qtde_disponivel"),
+            item.get("qtde_locada"), item.get("qtde_manutencao"),
+            item.get("qtde_transito"), item.get("qtde_expedicao"),
+            item.get("qtde_baixa"), item.get("qtde_filial"),
+            item.get("qtde_patrimonio"), item.get("qtde_franquia"),
+            item.get("qtde_reserva_filial"), item.get("status"),
+        ))
+
     with conn.cursor() as cur:
-        for item in payload:
-            codigo = item.get("codigo")
-            if not codigo:
-                continue
-
-            cur.execute(
-                """
-                insert into items (codigo, descricao, tipo, tipo_equipamento, quantitativo,
-                                   codsuperior, unidade, vlcompra, vlmercado, status, guid,
-                                   atualizado_na_api, atualizado_em_robo, payload)
-                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), %s)
-                on conflict (codigo) do update set
-                    descricao = excluded.descricao,
-                    tipo = excluded.tipo,
-                    tipo_equipamento = excluded.tipo_equipamento,
-                    quantitativo = excluded.quantitativo,
-                    codsuperior = excluded.codsuperior,
-                    unidade = excluded.unidade,
-                    vlcompra = excluded.vlcompra,
-                    vlmercado = excluded.vlmercado,
-                    status = excluded.status,
-                    guid = excluded.guid,
-                    atualizado_na_api = excluded.atualizado_na_api,
-                    atualizado_em_robo = now(),
-                    payload = excluded.payload
-                """,
-                (
-                    codigo,
-                    item.get("descricao"),
-                    item.get("tipo"),
-                    item.get("tipo_equipamento"),
-                    item.get("quantitativo"),
-                    item.get("codsuperior"),
-                    item.get("unidade"),
-                    item.get("vlcompra"),
-                    item.get("vlmercado"),
-                    item.get("status"),
-                    item.get("guid"),
-                    item.get("atualizado_em"),
-                    Jsonb(item),
-                ),
-            )
-
-            cur.execute(
-                """
-                insert into stock_snapshots (run_id, codigo, qtde_total, qtde_disponivel,
-                  qtde_locada, qtde_manutencao, qtde_transito, qtde_expedicao, qtde_baixa,
-                  qtde_filial, qtde_patrimonio, qtde_franquia, qtde_reserva_filial, status)
-                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    run_id, codigo,
-                    item.get("qtde_total"), item.get("qtde_disponivel"),
-                    item.get("qtde_locada"), item.get("qtde_manutencao"),
-                    item.get("qtde_transito"), item.get("qtde_expedicao"),
-                    item.get("qtde_baixa"), item.get("qtde_filial"),
-                    item.get("qtde_patrimonio"), item.get("qtde_franquia"),
-                    item.get("qtde_reserva_filial"), item.get("status"),
-                ),
-            )
+        cur.executemany(
+            """
+            insert into items (codigo, descricao, tipo, tipo_equipamento, quantitativo,
+                               codsuperior, unidade, vlcompra, vlmercado, status, guid,
+                               atualizado_na_api, atualizado_em_robo, payload)
+            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), %s)
+            on conflict (codigo) do update set
+                descricao = excluded.descricao,
+                tipo = excluded.tipo,
+                tipo_equipamento = excluded.tipo_equipamento,
+                quantitativo = excluded.quantitativo,
+                codsuperior = excluded.codsuperior,
+                unidade = excluded.unidade,
+                vlcompra = excluded.vlcompra,
+                vlmercado = excluded.vlmercado,
+                status = excluded.status,
+                guid = excluded.guid,
+                atualizado_na_api = excluded.atualizado_na_api,
+                atualizado_em_robo = now(),
+                payload = excluded.payload
+            """,
+            items_rows,
+        )
+        cur.executemany(
+            """
+            insert into stock_snapshots (run_id, codigo, qtde_total, qtde_disponivel,
+              qtde_locada, qtde_manutencao, qtde_transito, qtde_expedicao, qtde_baixa,
+              qtde_filial, qtde_patrimonio, qtde_franquia, qtde_reserva_filial, status)
+            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            snap_rows,
+        )
     return len(payload)
 
 
@@ -246,29 +249,32 @@ def coletar_quantitativos(conn, run_id: int, operacao: str) -> int:
 
     log(f"  {len(payload)} movimentos retornados. Aplicando upsert por id...")
 
-    novos = 0
+    rows = []
+    for mov in payload:
+        data_dt = parse_data_br(mov.get("data"))
+        rows.append((
+            mov.get("id"), mov.get("codigo"), mov.get("operacao"),
+            mov.get("qtde"), mov.get("vlunitario"), mov.get("valor"),
+            mov.get("data"), data_dt, mov.get("nf"),
+            mov.get("codclifor"), mov.get("nomeclifor"),
+            mov.get("observacao"), mov.get("cod_deposito"), run_id,
+        ))
+
+    if not rows:
+        return 0
+
     with conn.cursor() as cur:
-        for mov in payload:
-            data_dt = parse_data_br(mov.get("data"))
-            cur.execute(
-                """
-                insert into stock_movements (id, codigo, operacao, qtde, vlunitario, valor,
-                                             data_api, data_movimento, nf, codclifor, nomeclifor,
-                                             observacao, cod_deposito, run_id)
-                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                on conflict (id) do nothing
-                """,
-                (
-                    mov.get("id"), mov.get("codigo"), mov.get("operacao"),
-                    mov.get("qtde"), mov.get("vlunitario"), mov.get("valor"),
-                    mov.get("data"), data_dt, mov.get("nf"),
-                    mov.get("codclifor"), mov.get("nomeclifor"),
-                    mov.get("observacao"), mov.get("cod_deposito"), run_id,
-                ),
-            )
-            if cur.rowcount:
-                novos += 1
-    return novos
+        cur.executemany(
+            """
+            insert into stock_movements (id, codigo, operacao, qtde, vlunitario, valor,
+                                         data_api, data_movimento, nf, codclifor, nomeclifor,
+                                         observacao, cod_deposito, run_id)
+            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            on conflict (id) do nothing
+            """,
+            rows,
+        )
+        return cur.rowcount
 
 
 # ============================================================
@@ -393,6 +399,19 @@ def coletar_route_items(conn, run_id: int, novas_rotas: list[tuple[int, int, str
 
     itens_inseridos = 0
     erros_detalhe = 0
+    sql_insert = """
+        insert into route_items (
+            id_liberacaoitens, id_liberacao, id_liberacaomovimento,
+            cod_linha, nom_linha, quantitativo, lin_pesobruto, lin_pesoliquido,
+            cod_patrimonio, nom_patrimonio, marca, modelo, serie,
+            pat_pesobruto, pat_pesoliquido,
+            qtde_liberada, qtde_rota, qtde_entregue,
+            run_id, payload
+        )
+        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        on conflict (id_liberacaoitens) do nothing
+    """
+
     with conn.cursor() as cur:
         for id_lib, id_origem, tipo_ficha in pendentes:
             params = {"tipo_ficha": tipo_ficha, "id_origem": id_origem}
@@ -403,6 +422,7 @@ def coletar_route_items(conn, run_id: int, novas_rotas: list[tuple[int, int, str
                 log(f"  liberação {id_lib} (id_origem={id_origem}): status={status} — pulando")
                 continue
 
+            batch_rows = []
             for item in (payload.get("liberacoes") or []):
                 id_item = item.get("id_liberacaoitens")
                 if id_item is None:
@@ -411,35 +431,23 @@ def coletar_route_items(conn, run_id: int, novas_rotas: list[tuple[int, int, str
                 linha = item.get("linha") or {}
                 pat = item.get("patrimonio") or {}
 
-                cur.execute(
-                    """
-                    insert into route_items (
-                        id_liberacaoitens, id_liberacao, id_liberacaomovimento,
-                        cod_linha, nom_linha, quantitativo, lin_pesobruto, lin_pesoliquido,
-                        cod_patrimonio, nom_patrimonio, marca, modelo, serie,
-                        pat_pesobruto, pat_pesoliquido,
-                        qtde_liberada, qtde_rota, qtde_entregue,
-                        run_id, payload
-                    )
-                    values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    on conflict (id_liberacaoitens) do nothing
-                    """,
-                    (
-                        id_item, item.get("id_liberacao") or id_lib,
-                        item.get("id_liberacaomovimento"),
-                        linha.get("cod_linha"), linha.get("nom_linha"),
-                        linha.get("quantitativo"),
-                        linha.get("lin_pesobruto"), linha.get("lin_pesoliquido"),
-                        pat.get("cod_patrimonio"), pat.get("nom_patrimonio"),
-                        pat.get("marca"), pat.get("modelo"), pat.get("serie"),
-                        pat.get("pat_pesobruto"), pat.get("pat_pesoliquido"),
-                        item.get("qtde_liberada"), item.get("qtde_rota"),
-                        item.get("qtde_entregue"),
-                        run_id, Jsonb(item),
-                    ),
-                )
-                if cur.rowcount:
-                    itens_inseridos += 1
+                batch_rows.append((
+                    id_item, item.get("id_liberacao") or id_lib,
+                    item.get("id_liberacaomovimento"),
+                    linha.get("cod_linha"), linha.get("nom_linha"),
+                    linha.get("quantitativo"),
+                    linha.get("lin_pesobruto"), linha.get("lin_pesoliquido"),
+                    pat.get("cod_patrimonio"), pat.get("nom_patrimonio"),
+                    pat.get("marca"), pat.get("modelo"), pat.get("serie"),
+                    pat.get("pat_pesobruto"), pat.get("pat_pesoliquido"),
+                    item.get("qtde_liberada"), item.get("qtde_rota"),
+                    item.get("qtde_entregue"),
+                    run_id, Jsonb(item),
+                ))
+
+            if batch_rows:
+                cur.executemany(sql_insert, batch_rows)
+                itens_inseridos += cur.rowcount
 
     log(f"  {itens_inseridos} route_items inseridos. ({erros_detalhe} rotas com erro de detalhe)")
     return itens_inseridos
