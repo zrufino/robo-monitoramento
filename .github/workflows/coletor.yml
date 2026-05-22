@@ -1,0 +1,30 @@
+name: coletor-4x-dia
+
+on:
+  schedule:
+    # 8h, 12h, 16h, 20h horário de São Paulo (UTC-3, sem horário de verão desde 2019)
+    # = 11h, 15h, 19h, 23h UTC
+    - cron: '0 11,15,19,23 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: America/Sao_Paulo
+      DOSISTEMAS_TOKEN: ${{ secrets.DOSISTEMAS_TOKEN }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Rodar coletor
+        run: python coletor.py
