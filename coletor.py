@@ -314,46 +314,59 @@ def coletar_rotas(conn, run_id: int) -> tuple[int, list[tuple[int, int, str]]]:
     total = payload.get("total_items")
     log(f"  total_items={total}, retornados={len(registros)}")
 
-    novos = 0
-    novos_lista: list[tuple[int, int, str]] = []
+    ids_payload = [r["id_liberacao"] for r in registros if r.get("id_liberacao") is not None]
+    if not ids_payload:
+        return 0, []
+
     with conn.cursor() as cur:
-        for r in registros:
-            id_lib = r.get("id_liberacao")
-            if id_lib is None:
-                continue
+        cur.execute(
+            "select id_liberacao from routes where id_liberacao = any(%s)",
+            (ids_payload,),
+        )
+        ids_ja_existem: set[int] = {row[0] for row in cur.fetchall()}
 
-            destino = (r.get("destinatario") or {}).get("destino") or {}
-            contato = r.get("contato") or {}
-            destinatario = r.get("destinatario") or {}
+    rows = []
+    novos_lista: list[tuple[int, int, str]] = []
+    for r in registros:
+        id_lib = r.get("id_liberacao")
+        if id_lib is None:
+            continue
 
-            cur.execute(
-                """
-                insert into routes (id_liberacao, id_recepcao, id_origem, data_api, data_rota,
-                                    tipo_ficha, operacao, status, status_rota,
-                                    destinatario_cod, destinatario_nome,
-                                    destinatario_razaosocial, contato_nome,
-                                    contato_telefone, endereco_cidade, endereco_estado,
-                                    run_id, payload)
-                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                on conflict (id_liberacao) do nothing
-                """,
-                (
-                    id_lib, r.get("id_recepcao"), r.get("id_origem"),
-                    r.get("data"), parse_data_br(r.get("data")),
-                    r.get("tipo_ficha"), r.get("operacao"), r.get("status"),
-                    r.get("status_rota"),
-                    destinatario.get("cod_cliente"), destinatario.get("nom_cliente"),
-                    destinatario.get("razaosocial"),
-                    contato.get("contato_nome"),
-                    contato.get("contato_telefone") or contato.get("contato_departamento"),
-                    destino.get("cidade"), destino.get("estado"),
-                    run_id, Jsonb(r),
-                ),
-            )
-            if cur.rowcount:
-                novos += 1
-                if r.get("id_origem") and r.get("tipo_ficha"):
-                    novos_lista.append((id_lib, r["id_origem"], r["tipo_ficha"]))
+        destino = (r.get("destinatario") or {}).get("destino") or {}
+        contato = r.get("contato") or {}
+        destinatario = r.get("destinatario") or {}
+
+        rows.append((
+            id_lib, r.get("id_recepcao"), r.get("id_origem"),
+            r.get("data"), parse_data_br(r.get("data")),
+            r.get("tipo_ficha"), r.get("operacao"), r.get("status"),
+            r.get("status_rota"),
+            destinatario.get("cod_cliente"), destinatario.get("nom_cliente"),
+            destinatario.get("razaosocial"),
+            contato.get("contato_nome"),
+            contato.get("contato_telefone") or contato.get("contato_departamento"),
+            destino.get("cidade"), destino.get("estado"),
+            run_id, Jsonb(r),
+        ))
+
+        if id_lib not in ids_ja_existem and r.get("id_origem") and r.get("tipo_ficha"):
+            novos_lista.append((id_lib, r["id_origem"], r["tipo_ficha"]))
+
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            insert into routes (id_liberacao, id_recepcao, id_origem, data_api, data_rota,
+                                tipo_ficha, operacao, status, status_rota,
+                                destinatario_cod, destinatario_nome,
+                                destinatario_razaosocial, contato_nome,
+                                contato_telefone, endereco_cidade, endereco_estado,
+                                run_id, payload)
+            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            on conflict (id_liberacao) do nothing
+            """,
+            rows,
+        )
+        novos = cur.rowcount
 
     return novos, novos_lista
 
