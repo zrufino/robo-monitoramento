@@ -3,8 +3,9 @@ name: coletor-3x-dia
 on:
   schedule:
     # 8h, 12h, 18h horário de São Paulo (UTC-3, sem horário de verão desde 2019)
-    # = 11h, 15h, 21h UTC
-    - cron: '0 11,15,21 * * *'
+    # = 11h, 15h, 21h UTC, segunda a sábado (pula domingo).
+    # Campo dia-da-semana: 0=domingo, 1=segunda ... 6=sábado.
+    - cron: '0 11,15,21 * * 1-6'
   workflow_dispatch: {}
 
 jobs:
